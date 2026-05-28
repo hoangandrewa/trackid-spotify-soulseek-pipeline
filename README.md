@@ -63,7 +63,7 @@ connects to the Soulseek network.
 ### 4. Install the pipeline
 
 ```bash
-git clone https://github.com/hoangandrewa/trackid-pipeline.git
+git clone https://github.com/hoangandrewa/trackid-spotify-soulseek-pipeline.git
 cd trackid-pipeline
 python -m venv venv
 source venv/bin/activate
