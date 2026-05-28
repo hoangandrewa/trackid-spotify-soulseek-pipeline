@@ -7,7 +7,7 @@ high-quality files via Soulseek (slskd) with format preferences and queue manage
 
 1. **Spotify Developer App** — https://developer.spotify.com/dashboard
    - Create an app, get client ID + secret
-   - Set redirect URI to `http://localhost:8888/callback`
+   - Set redirect URI to `http://127.0.0.1:8888/callback`
 
 2. **slskd** — https://github.com/slskd/slskd
    - Self-hosted Soulseek client with REST API
