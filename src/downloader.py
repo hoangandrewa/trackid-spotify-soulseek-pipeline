@@ -64,13 +64,13 @@ class DownloadOrchestrator:
         seen_paths = set()
 
         for query in queries:
-            results = self.slskd.search(query, timeout_sec=30.0)
+            results = self.slskd.search(query, timeout_sec=15.0)
             for r in results:
                 if r.file_path not in seen_paths:
                     seen_paths.add(r.file_path)
                     all_results.append(r)
-            # If we already have plenty of results, skip broader searches
-            if len(all_results) > 50:
+            # If we already have enough results, skip broader searches
+            if len(all_results) > 20:
                 break
 
         # Rank candidates
@@ -222,21 +222,29 @@ class DownloadOrchestrator:
         self.prepare_tasks(tracks)
 
         # Phase 1: Search and rank all tracks
-        # Sequential with delay — slskd rate-limits concurrent searches
+        # slskd allows 2 concurrent searches — use ThreadPoolExecutor
         logger.info("=" * 60)
         logger.info("Phase 1: Searching Soulseek for all tracks...")
         logger.info("=" * 60)
 
-        for i, task in enumerate(self.tasks):
-            try:
-                self.search_and_rank(task)
-            except Exception as e:
-                logger.error(f"  Search failed for {task.track.search_query}: {e}")
-                task.status = DownloadStatus.FAILED
-                task.error = str(e)
-            # Small delay between searches to avoid rate limits
-            if i < len(self.tasks) - 1:
-                time.sleep(2)
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = {}
+            for i, task in enumerate(self.tasks):
+                # Stagger submissions slightly to avoid burst
+                if i > 0:
+                    time.sleep(1)
+                futures[executor.submit(self.search_and_rank, task)] = task
+
+            for future in as_completed(futures):
+                task = futures[future]
+                try:
+                    future.result()
+                except Exception as e:
+                    logger.error(f"  Search failed for {task.track.search_query}: {e}")
+                    task.status = DownloadStatus.FAILED
+                    task.error = str(e)
 
         # Phase 2: Queue initial downloads (up to max_concurrent)
         logger.info("=" * 60)
