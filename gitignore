@@ -1,0 +1,27 @@
+# Credentials & config
+config.yaml
+.cache
+.cache-*
+.env
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Pipeline state
+pipeline_state.json
+download_history.json
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

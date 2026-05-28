@@ -5,6 +5,7 @@ Accepts either a TrackID CSV export or a Spotify playlist URL as input.
 
 import json
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -27,6 +28,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 STATE_FILE = "pipeline_state.json"
+LOGS_DIR = "logs"
+HISTORY_FILE = "download_history.json"
 
 
 # ── Shared input resolution ──────────────────────────────────────────
@@ -69,9 +72,18 @@ def print_tracklist(tracks: list[Track]):
         logger.info(f"  {i:3d}. {t.artist} - {t.title}{dur}")
 
 
-def save_state(tasks, path: str = STATE_FILE):
-    """Persist pipeline state for retry/resume."""
-    state = [
+def save_state(tasks, set_name: str = "", path: str = STATE_FILE):
+    """
+    Save pipeline results three ways:
+    1. pipeline_state.json — latest run (used by retry command)
+    2. logs/YYYY-MM-DD_HHMMSS_{set_name}.json — timestamped run log
+    3. download_history.json — persistent append-only history across all runs
+    """
+    from datetime import datetime
+    now = datetime.now()
+    timestamp = now.strftime("%Y-%m-%d_%H%M%S")
+
+    run_data = [
         {
             "artist": t.track.artist,
             "title": t.track.title,
@@ -81,8 +93,48 @@ def save_state(tasks, path: str = STATE_FILE):
         }
         for t in tasks
     ]
+
+    # 1. Latest state (for retry)
     with open(path, "w") as f:
-        json.dump(state, f, indent=2)
+        json.dump(run_data, f, indent=2)
+
+    # 2. Timestamped log
+    os.makedirs(LOGS_DIR, exist_ok=True)
+    safe_name = "".join(c for c in set_name if c.isalnum() or c in " -_").strip().replace(" ", "_")
+    log_filename = f"{timestamp}_{safe_name}.json" if safe_name else f"{timestamp}.json"
+    log_path = os.path.join(LOGS_DIR, log_filename)
+
+    run_summary = {
+        "timestamp": now.isoformat(),
+        "set_name": set_name,
+        "total": len(run_data),
+        "completed": sum(1 for t in run_data if t["status"] == "complete"),
+        "failed": sum(1 for t in run_data if t["status"] == "failed"),
+        "tracks": run_data,
+    }
+    with open(log_path, "w") as f:
+        json.dump(run_summary, f, indent=2)
+    logger.info(f"  Run log saved: {log_path}")
+
+    # 3. Append to persistent history
+    history = []
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE) as f:
+                history = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            history = []
+
+    for t in run_data:
+        entry = {
+            "timestamp": now.isoformat(),
+            "set_name": set_name,
+            **t,
+        }
+        history.append(entry)
+
+    with open(HISTORY_FILE, "w") as f:
+        json.dump(history, f, indent=2)
 
 
 # ── Input options shared across commands ─────────────────────────────
@@ -193,7 +245,7 @@ def run(ctx, csv_path: Optional[str], playlist: Optional[str]):
         for task in summary["failed_tracks"]:
             logger.info(f"    - {task.track.search_query}: {task.error}")
 
-    save_state(orchestrator.tasks)
+    save_state(orchestrator.tasks, set_name)
 
 
 @cli.command()
@@ -235,7 +287,7 @@ def download(ctx, csv_path: Optional[str], playlist: Optional[str]):
 
     logger.info(f"\nCompleted: {summary['completed']}/{summary['total']}")
     logger.info(f"Failed: {summary['failed']}")
-    save_state(orchestrator.tasks)
+    save_state(orchestrator.tasks, set_name)
 
 
 @cli.command()
@@ -268,7 +320,7 @@ def retry(ctx):
 
     logger.info(f"\nCompleted: {summary['completed']}/{summary['total']}")
     logger.info(f"Still failed: {summary['failed']}")
-    save_state(orchestrator.tasks)
+    save_state(orchestrator.tasks, "retry")
 
 
 @cli.command(name="list")
@@ -310,6 +362,68 @@ def status(ctx):
     except Exception as e:
         logger.error(f"Cannot connect to slskd: {e}")
         sys.exit(1)
+
+
+@cli.command()
+@click.option("--failed-only", is_flag=True, help="Show only failed tracks")
+def history(failed_only):
+    """View download history across all runs."""
+    if not os.path.exists(HISTORY_FILE):
+        print("No download history yet. Run the pipeline first.")
+        return
+
+    with open(HISTORY_FILE) as f:
+        entries = json.load(f)
+
+    if failed_only:
+        entries = [e for e in entries if e["status"] != "complete"]
+
+    if not entries:
+        print("No matching entries.")
+        return
+
+    # Group by run
+    from collections import defaultdict
+    runs = defaultdict(list)
+    for e in entries:
+        key = f"{e.get('timestamp', '?')[:16]} — {e.get('set_name', '?')}"
+        runs[key].append(e)
+
+    for run_key, tracks in runs.items():
+        complete = sum(1 for t in tracks if t["status"] == "complete")
+        failed = sum(1 for t in tracks if t["status"] == "failed")
+        print(f"\n{run_key}  ({complete} ok, {failed} failed, {len(tracks)} total)")
+        for t in tracks:
+            icon = "✓" if t["status"] == "complete" else "✗"
+            line = f"  {icon} {t['artist']} - {t['title']}"
+            if t.get("error"):
+                line += f"  [{t['error']}]"
+            print(line)
+
+
+@cli.command()
+def logs():
+    """List all run logs."""
+    if not os.path.exists(LOGS_DIR):
+        print("No logs yet. Run the pipeline first.")
+        return
+
+    log_files = sorted(Path(LOGS_DIR).glob("*.json"), reverse=True)
+    if not log_files:
+        print("No logs yet.")
+        return
+
+    for lf in log_files:
+        try:
+            with open(lf) as f:
+                data = json.load(f)
+            c = data.get("completed", 0)
+            fail = data.get("failed", 0)
+            total = data.get("total", 0)
+            name = data.get("set_name", "?")
+            print(f"  {lf.name:45s}  {name:30s}  {c}/{total} ok, {fail} failed")
+        except (json.JSONDecodeError, IOError):
+            print(f"  {lf.name} (corrupt)")
 
 
 def main():
