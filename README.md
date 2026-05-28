@@ -134,10 +134,47 @@ Soulseek matching accuracy.
 
 1. **Parse input** — reads a TrackID CSV or fetches tracks from a Spotify playlist
 2. **Spotify search** (CSV only) — fuzzy-matches tracks and creates a preview playlist
-3. **Soulseek search** — multiple query strategies per track (artist+title, title only, artist only) to maximize results
-4. **Rank candidates** — scores by format preference, audio quality (bit depth, sample rate, bitrate), name match, duration match, and queue availability
-5. **Download** — queues top candidate, monitors progress, cancels and retries from next candidate if stalled, rejected, or too slow
-6. **Flatten** — moves all downloaded files from subfolders into a single output directory
+3. **Soulseek search** — multiple query strategies per track (artist+title, title only, artist only), 2 concurrent searches, 15s timeout per query
+4. **Stage A — Identity match** — filters results to only correct tracks (see below)
+5. **Stage B — Quality ranking** — among confirmed matches, picks the best copy
+6. **Download** — queues top candidate, monitors progress, cancels and retries from next candidate if stalled, rejected, or too slow
+7. **Flatten** — moves all downloaded files from subfolders into a single output directory
+
+## Matching architecture
+
+The matcher uses a two-stage pipeline to prevent wrong tracks from ever being
+downloaded, regardless of how high-quality they are.
+
+### Stage A — Identity ("Is this the right track?")
+
+Every search result must pass all of these checks:
+
+- **Audio file filter** — only flac, aiff, wav, mp3, ogg, m4a, aac
+- **Negative keyword rejection** — instant reject for "sample pack", "tutorial",
+  "dj set", "stems", "acapella", etc. Soft penalty for "vinyl rip", "bootleg",
+  "radio edit", "live version"
+- **Title coverage** — at least 50% of the track title's key words must appear in
+  the filename or path
+- **Artist coverage** — at least 30% of the artist's name must appear in the
+  filename or path (lenient for compilations)
+- **Duration gate** — ±1 sec: high confidence, ±3 sec: strong, ±5 sec: moderate,
+  >5 sec: **rejected**. Unknown duration gets a neutral score, not a pass.
+
+Identity confidence is weighted: title (40%) + artist (25%) + duration (35%).
+Results below 0.35 confidence are rejected.
+
+### Stage B — Quality ("Which copy is best?")
+
+Only runs on results that passed Stage A. Scores by:
+
+- **Identity confidence** (0-20 pts) — higher confidence matches rank higher
+- **Format preference** (0-30 pts) — based on your `format_priority` config
+- **Audio quality** (0-25 pts) — bit depth, sample rate, bitrate, with file size
+  as a proxy when metadata is unavailable
+- **Availability** (0-10 pts) — free upload slots, queue position
+
+A correct 320kbps MP3 will always beat a wrong 24-bit FLAC because wrong tracks
+are eliminated before quality scoring begins.
 
 ## Configuration
 
@@ -147,7 +184,7 @@ See `config.example.yaml` for all options. Key settings:
 |---|---|---|
 | `format_priority` | flac, aiff, wav, mp3 | Preferred formats in order |
 | `min_mp3_bitrate` | 320 | Reject MP3s below this kbps |
-| `duration_tolerance_sec` | 5 | How close duration must match (seconds) |
+| `duration_tolerance_sec` | 5 | Max duration difference before rejecting (seconds) |
 | `max_queue_position` | 50 | Cancel if queued behind this many users |
 | `start_timeout_min` | 5 | Cancel if download doesn't start in time |
 | `min_transfer_speed_kbps` | 20 | Cancel if speed drops below this |
@@ -162,13 +199,14 @@ command mounts a music folder with `-v "/path/to/music:/music:ro"` and sets
 `SLSKD_SHARED_DIR=/music`.
 
 **"429 Too Many Requests"**
-slskd rate-limits concurrent searches. The pipeline handles this with automatic
-retry and backoff. If you see many 429s, the delays between searches may need
-increasing.
+slskd limits concurrent searches to 2. The pipeline handles this with automatic
+retry and backoff.
 
 **"No viable candidates" for a track**
-The fuzzy matcher couldn't find a close enough match. Try searching manually in
-the slskd web UI — the track may be listed under a different name or artist.
+The identity matcher couldn't confirm any results as the correct track. Common
+causes: artist or title is spelled differently on Soulseek, the track is very
+new/obscure, or all results failed the duration check. Try searching manually
+in the slskd web UI.
 
 **Spotify 403 Forbidden when creating playlists**
 Go to your Spotify developer app → Settings → User Management and add the email
