@@ -69,6 +69,10 @@ def normalize(text: str) -> str:
     return text
 
 
+# Backward-compatible alias
+normalize_for_matching = normalize
+
+
 def extract_words(text: str, remove_stopwords: bool = True) -> set[str]:
     """Normalize text and split into a set of meaningful words."""
     words = set(normalize(text).split())
