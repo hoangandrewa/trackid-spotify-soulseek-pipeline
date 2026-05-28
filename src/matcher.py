@@ -97,10 +97,17 @@ def rank_candidates(
     - Fuzzy name match
     - Queue position / availability
     """
+    # Audio extensions we accept
+    AUDIO_EXTENSIONS = {"flac", "aiff", "aif", "wav", "mp3", "ogg", "wma", "m4a", "aac"}
+
     scored: list[tuple[float, SoulseekResult]] = []
 
     for result in results:
         # === Hard filters ===
+
+        # Must be an audio file
+        if result.extension not in AUDIO_EXTENSIONS:
+            continue
 
         # Must meet minimum name match
         name_score = match_score(track, result)

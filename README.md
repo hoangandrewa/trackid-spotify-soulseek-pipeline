@@ -1,4 +1,4 @@
-# TrackID -> Spotify -> Soulseek Pipeline
+# TrackID Pipeline
 
 Takes a TrackID.net CSV export or Spotify playlist, creates a Spotify preview
 playlist, then downloads high-quality files via Soulseek (slskd) with format
@@ -32,7 +32,7 @@ docker run -d \
   -e SLSKD_REMOTE_CONFIGURATION=true \
   -e SLSKD_SLSK_USERNAME=your_soulseek_username \
   -e SLSKD_SLSK_PASSWORD=your_soulseek_password \
-  -e SLSKD_DIRECTORIES__SHARED=/music \
+  -e "SLSKD_SHARED_DIR=/music" \
   slskd/slskd
 ```
 
@@ -64,7 +64,7 @@ connects to the Soulseek network.
 
 ```bash
 git clone https://github.com/hoangandrewa/trackid-spotify-soulseek-pipeline.git
-cd trackid-pipeline
+cd trackid-spotify-soulseek-pipeline
 python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
@@ -159,7 +159,7 @@ See `config.example.yaml` for all options. Key settings:
 **"Completed, Rejected" on most downloads**
 Users are blocking you because you're not sharing files. Make sure your Docker
 command mounts a music folder with `-v "/path/to/music:/music:ro"` and sets
-`SLSKD_DIRECTORIES__SHARED=/music`.
+`SLSKD_SHARED_DIR=/music`.
 
 **"429 Too Many Requests"**
 slskd rate-limits concurrent searches. The pipeline handles this with automatic
