@@ -1,0 +1,7 @@
+spotipy>=2.23.0
+requests>=2.31.0
+pyyaml>=6.0
+thefuzz[speedup]>=0.20.0
+mutagen>=1.47.0
+pandas>=2.1.0
+click>=8.1.0

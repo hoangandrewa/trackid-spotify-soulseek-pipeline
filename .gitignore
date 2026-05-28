@@ -1,0 +1,11 @@
+config.yaml
+.cache
+.cache-*
+.env
+venv/
+__pycache__/
+*.pyc
+pipeline_state.json
+.DS_Store
+.vscode/
+.idea/
