@@ -1,0 +1,46 @@
+# Copy to config.yaml and fill in your credentials
+
+spotify:
+  client_id: "YOUR_SPOTIFY_CLIENT_ID"
+  client_secret: "YOUR_SPOTIFY_CLIENT_SECRET"
+  redirect_uri: "http://127.0.0.1:8888/callback"
+  playlist_name_template: "TrackID: {set_name}"
+
+slskd:
+  base_url: "http://localhost:5030"
+  # Use username/password auth (recommended)
+  username: "slskd"
+  password: "slskd"
+  # Or use API key auth (set in slskd.yml)
+  # api_key: "YOUR_SLSKD_API_KEY"
+
+download:
+  output_dir: "~/Music/TrackID Downloads"
+
+  # Preferred formats in priority order (first = most preferred)
+  format_priority:
+    - aiff
+    - Flac
+    - wav
+    - mp3
+
+  # For MP3, minimum acceptable bitrate (kbps)
+  min_mp3_bitrate: 320
+
+  # Duration tolerance when matching (seconds)
+  duration_tolerance_sec: 5
+
+  # Cancel download if not started within this many minutes
+  start_timeout_min: 10
+
+  # Cancel if queue position is above this
+  max_queue_position: 2000
+
+  # Max concurrent downloads
+  max_concurrent: 10
+
+  # Seconds between polling slskd for transfer status
+  poll_interval_sec: 10
+
+  # Max retries per track before giving up
+  max_retries: 5
