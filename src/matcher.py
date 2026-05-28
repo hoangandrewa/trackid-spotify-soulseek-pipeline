@@ -1,4 +1,16 @@
-"""Fuzzy matching and candidate ranking for Soulseek results."""
+"""Two-stage matching and ranking for Soulseek results.
+
+Stage A — Identity: Is this actually the correct track?
+  - Artist token coverage
+  - Title token coverage
+  - Duration verification
+  - Negative keyword rejection
+
+Stage B — Quality: Among confirmed matches, which is the best copy?
+  - Format preference
+  - Audio quality (bit depth, sample rate, bitrate)
+  - Availability (queue position, free slots)
+"""
 
 import re
 from typing import Optional
@@ -8,108 +20,261 @@ from thefuzz import fuzz
 from .models import Track, SoulseekResult, FileFormat
 
 
-# Noise that appears in track names but doesn't help matching
+# ── Constants ─────────────────────────────────────────────────────────
+
+AUDIO_EXTENSIONS = {"flac", "aiff", "aif", "wav", "mp3", "ogg", "wma", "m4a", "aac"}
+
 STRIP_PATTERNS = [
     r"\(original\s*mix\)",
     r"\(clip\)",
     r"\(preview\)",
     r"\(master\)",
     r"\(digital\)",
-    r"\[.*?\]",  # Anything in square brackets
-    r"feat\.?\s+.*$",  # featuring credits
+    r"\[.*?\]",
+    r"feat\.?\s+.*$",
+]
+
+STOPWORDS = {
+    "the", "a", "an", "of", "in", "on", "at", "to", "for", "and", "or",
+    "mix", "original", "pt", "part", "vol", "version",
+}
+
+# Hard reject — files containing these terms are never viable
+NEGATIVE_KEYWORDS_HARD = [
+    "sample pack", "samplepack", "stems", "acapella", "a cappella",
+    "tutorial", "masterclass", "ableton", "fl studio", "logic pro",
+    "midi pack", "drum kit", "loop pack", "sound design",
+    "dj set", "dj mix", "continuous mix", "mixed by",
+    "karaoke", "instrumental version", "backing track",
+]
+
+# Soft penalty — these terms reduce confidence but don't reject
+NEGATIVE_KEYWORDS_SOFT = [
+    "vinyl rip", "youtube rip", "radio rip", "radio edit",
+    "bootleg", "unofficial", "re-edit",
+    "live at", "live from", "live version",
+    "preview", "snippet", "clip",
 ]
 
 
-def normalize_for_matching(text: str) -> str:
-    """Strip noise, lowercase, collapse whitespace for fuzzy comparison."""
+# ── Text normalization ────────────────────────────────────────────────
+
+def normalize(text: str) -> str:
+    """Lowercase, strip noise patterns, remove non-alphanumeric, collapse spaces."""
     text = text.lower().strip()
     for pattern in STRIP_PATTERNS:
         text = re.sub(pattern, "", text, flags=re.IGNORECASE)
-    # Remove non-alphanumeric except spaces
     text = re.sub(r"[^a-z0-9\s]", "", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
 
-def title_present(track: Track, result: SoulseekResult) -> bool:
-    """
-    Check if the track title (or its key words) appears in the filename or path.
-    This prevents matching wrong tracks that just share an artist name.
-    """
-    # Normalize the title — strip parentheticals first for a clean core title
-    import re
-    core_title = re.sub(r"\s*[\(\[].*?[\)\]]", "", track.title).strip()
-    title_normalized = normalize_for_matching(core_title)
-    title_words = set(title_normalized.split())
-
-    # Remove very short/common words that cause false matches
-    stopwords = {"the", "a", "an", "of", "in", "on", "at", "to", "for", "and", "or", "mix", "remix", "original", "pt", "part"}
-    title_words = title_words - stopwords
-
-    if not title_words:
-        # Title was all stopwords — fall back to full normalized title substring check
-        title_words = set(normalize_for_matching(track.title).split())
-
-    # Build candidate strings from filename and path
-    filename_clean = result.filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1].rsplit(".", 1)[0]
-    filename_normalized = normalize_for_matching(filename_clean.replace("_", " ").replace("-", " "))
-    path_normalized = normalize_for_matching(result.file_path.replace("\\", "/").replace("_", " ").replace("-", " "))
-
-    candidate_words = set(filename_normalized.split()) | set(path_normalized.split())
-
-    # Require at least half of the title words to appear, and at least 1
-    matches = title_words & candidate_words
-    required = max(1, len(title_words) // 2)
-    return len(matches) >= required
+def extract_words(text: str, remove_stopwords: bool = True) -> set[str]:
+    """Normalize text and split into a set of meaningful words."""
+    words = set(normalize(text).split())
+    if remove_stopwords:
+        words = words - STOPWORDS
+    return words
 
 
-def match_score(track: Track, result: SoulseekResult) -> int:
-    """
-    Score how well a Soulseek result matches the target track.
-    Returns 0-100. Higher is better.
-    """
-    # Build the expected string from the track
-    expected = normalize_for_matching(f"{track.artist} {track.title}")
-
-    # Build the candidate string from the filename (strip path + extension)
-    filename_clean = result.filename.rsplit("/", 1)[-1]
-    filename_clean = filename_clean.rsplit("\\", 1)[-1]
-    filename_clean = filename_clean.rsplit(".", 1)[0]
-    # Replace underscores and hyphens with spaces
-    filename_clean = filename_clean.replace("_", " ").replace("-", " ")
-    candidate = normalize_for_matching(filename_clean)
-
-    # Also try matching against the full path (sometimes has artist/album folders)
-    path_clean = result.file_path.replace("\\", "/").replace("_", " ").replace("-", " ")
-    path_candidate = normalize_for_matching(path_clean)
-
-    # Take the best score between filename and full path
-    score = max(
-        fuzz.token_sort_ratio(expected, candidate),
-        fuzz.token_sort_ratio(expected, path_candidate),
-        fuzz.partial_ratio(expected, candidate),
-    )
-
-    return score
+def get_candidate_text(result: SoulseekResult) -> tuple[str, str]:
+    """Extract normalized filename and path text from a result."""
+    filename = result.filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1].rsplit(".", 1)[0]
+    filename_norm = normalize(filename.replace("_", " ").replace("-", " "))
+    path_norm = normalize(result.file_path.replace("\\", "/").replace("_", " ").replace("-", " "))
+    return filename_norm, path_norm
 
 
-def duration_matches(
+# ── Stage A: Identity matching ────────────────────────────────────────
+
+def check_identity(
     track: Track,
     result: SoulseekResult,
-    tolerance_sec: float = 5.0,
-) -> Optional[bool]:
+    duration_tolerance_sec: float = 5.0,
+) -> tuple[bool, float]:
     """
-    Check if the duration of a Soulseek result is within tolerance.
-    Returns None if we can't determine (no duration data on either side).
+    Stage A: Determine if this result is actually the correct track.
+
+    Returns (passes, confidence) where:
+      - passes: True if this result should be considered
+      - confidence: 0.0-1.0 identity confidence score
     """
+    filename_norm, path_norm = get_candidate_text(result)
+    candidate_words = set(filename_norm.split()) | set(path_norm.split())
+    candidate_text = filename_norm + " " + path_norm
+
+    # ── Hard reject: negative keywords ──
+    for keyword in NEGATIVE_KEYWORDS_HARD:
+        if keyword in candidate_text:
+            return False, 0.0
+
+    # ── Audio file check ──
+    if result.extension not in AUDIO_EXTENSIONS:
+        return False, 0.0
+
+    # ── Artist matching ──
+    artist_words = extract_words(track.artist)
+    # For collabs, also try just the primary artist
+    primary_artist = track.artist.split(",")[0].strip()
+    primary_words = extract_words(primary_artist)
+
+    if artist_words:
+        artist_matches = artist_words & candidate_words
+        primary_matches = primary_words & candidate_words
+        # Use whichever gives better coverage
+        best_artist_coverage = max(
+            len(artist_matches) / len(artist_words) if artist_words else 0,
+            len(primary_matches) / len(primary_words) if primary_words else 0,
+        )
+    else:
+        best_artist_coverage = 0.0
+
+    # ── Title matching ──
+    # Strip parentheticals for a clean core title
+    core_title = re.sub(r"\s*[\(\[].*?[\)\]]", "", track.title).strip()
+    title_words = extract_words(core_title)
+
+    # If core title is empty after stripping, use the full title
+    if not title_words:
+        title_words = extract_words(track.title)
+
+    if title_words:
+        title_matches = title_words & candidate_words
+        title_coverage = len(title_matches) / len(title_words)
+    else:
+        title_coverage = 0.0
+
+    # ── Identity gate ──
+    # Title is required — must have strong coverage
+    if title_coverage < 0.5:
+        return False, 0.0
+
+    # Artist should have some presence (but be lenient for compilations)
+    if artist_words and best_artist_coverage < 0.3:
+        # Check if artist appears in the path (folder name)
+        artist_in_path = any(w in path_norm for w in primary_words if len(w) > 2)
+        if not artist_in_path:
+            return False, 0.0
+
+    # ── Duration as identity signal ──
+    duration_confidence = 0.5  # default: unknown
     track_dur = track.best_duration_sec
     result_dur = result.duration_sec
 
-    if track_dur is None or result_dur is None:
-        return None  # Can't verify — not a rejection, just unknown
+    if track_dur and result_dur:
+        diff = abs(track_dur - result_dur)
+        if diff <= 1:
+            duration_confidence = 1.0
+        elif diff <= 3:
+            duration_confidence = 0.9
+        elif diff <= 5:
+            duration_confidence = 0.7
+        else:
+            # Duration mismatch > 5 sec — reject
+            return False, 0.0
 
-    return abs(track_dur - result_dur) <= tolerance_sec
+    # ── Compute identity confidence ──
+    # Weighted: title 40%, artist 25%, duration 35%
+    confidence = (
+        title_coverage * 0.40
+        + best_artist_coverage * 0.25
+        + duration_confidence * 0.35
+    )
 
+    # ── Soft negative keyword penalty ──
+    for keyword in NEGATIVE_KEYWORDS_SOFT:
+        if keyword in candidate_text:
+            confidence *= 0.7
+            break  # Only penalize once
+
+    # Minimum confidence threshold
+    if confidence < 0.35:
+        return False, 0.0
+
+    return True, confidence
+
+
+# ── Stage B: Quality ranking ──────────────────────────────────────────
+
+def score_quality(
+    track: Track,
+    result: SoulseekResult,
+    identity_confidence: float,
+    format_priority: list[str],
+    min_mp3_bitrate: int = 320,
+    max_queue_position: int = 50,
+) -> float:
+    """
+    Stage B: Among confirmed identity matches, score by quality.
+
+    Returns a total score. Higher is better.
+    Only called on results that passed Stage A.
+    """
+    total = 0.0
+
+    # ── Identity confidence bonus: 0-20 pts ──
+    # Reward higher-confidence matches even in quality ranking
+    total += identity_confidence * 20
+
+    # ── Format preference: 0-30 pts ──
+    fmt = result.file_format.value
+    if fmt in format_priority:
+        idx = format_priority.index(fmt)
+        total += 30 - (idx * (20 / max(len(format_priority) - 1, 1)))
+
+    # ── Audio quality: 0-25 pts ──
+    quality = 0.0
+
+    if result.bit_depth:
+        if result.bit_depth >= 24:
+            quality += 10
+        elif result.bit_depth >= 16:
+            quality += 5
+
+    if result.sample_rate:
+        if result.sample_rate >= 96000:
+            quality += 8
+        elif result.sample_rate >= 48000:
+            quality += 5
+        elif result.sample_rate >= 44100:
+            quality += 3
+
+    if result.bitrate:
+        if result.bitrate >= 320:
+            quality += 5
+        elif result.bitrate >= 256:
+            quality += 3
+
+    # File size as quality proxy when metadata isn't available
+    if quality < 5 and result.size_bytes and track.best_duration_sec:
+        bps = result.size_bytes / max(track.best_duration_sec, 1)
+        if result.file_format in (FileFormat.FLAC, FileFormat.AIFF, FileFormat.WAV):
+            if bps > 200000:
+                quality += 7
+            elif bps > 100000:
+                quality += 3
+        elif result.file_format == FileFormat.MP3:
+            if bps > 38000:
+                quality += 4
+
+    total += min(quality, 25)
+
+    # ── Availability: 0-10 pts ──
+    if result.free_upload_slots:
+        total += 7
+    if max_queue_position > 0:
+        queue_penalty = min(result.queue_length, max_queue_position) / max_queue_position
+        total += (1 - queue_penalty) * 3
+
+    # ── MP3 bitrate penalty ──
+    if result.file_format == FileFormat.MP3:
+        if result.bitrate and result.bitrate < min_mp3_bitrate:
+            total -= 15
+
+    return total
+
+
+# ── Main entry point ──────────────────────────────────────────────────
 
 def rank_candidates(
     track: Track,
@@ -121,120 +286,31 @@ def rank_candidates(
     max_queue_position: int = 50,
 ) -> list[SoulseekResult]:
     """
-    Filter and rank Soulseek results for a track.
+    Two-stage matching pipeline:
+      Stage A — filter to only correct tracks (identity)
+      Stage B — rank correct tracks by quality
 
-    Scoring weights:
-    - Format preference (highest priority)
-    - Duration match
-    - Fuzzy name match
-    - Queue position / availability
+    Returns results sorted best-first.
     """
-    # Audio extensions we accept
-    AUDIO_EXTENSIONS = {"flac", "aiff", "aif", "wav", "mp3", "ogg", "wma", "m4a", "aac"}
-
     scored: list[tuple[float, SoulseekResult]] = []
 
     for result in results:
-        # === Hard filters ===
-
-        # Must be an audio file
-        if result.extension not in AUDIO_EXTENSIONS:
+        # Stage A: Identity — is this the right track?
+        passes, confidence = check_identity(
+            track, result, duration_tolerance_sec
+        )
+        if not passes:
             continue
 
-        # Track title must appear in the filename/path
-        if not title_present(track, result):
-            continue
+        # Stage B: Quality — how good is this copy?
+        quality_score = score_quality(
+            track, result, confidence,
+            format_priority=format_priority,
+            min_mp3_bitrate=min_mp3_bitrate,
+            max_queue_position=max_queue_position,
+        )
 
-        # Must meet minimum name match
-        name_score = match_score(track, result)
-        if name_score < min_match_score:
-            continue
+        scored.append((quality_score, result))
 
-        # Duration check (skip mismatches, allow unknowns through)
-        dur_ok = duration_matches(track, result, duration_tolerance_sec)
-        if dur_ok is False:
-            continue
-
-        # Skip low-bitrate MP3s
-        if result.file_format == FileFormat.MP3:
-            if result.bitrate and result.bitrate < min_mp3_bitrate:
-                continue
-
-        # Skip users with massive queues
-        if result.queue_length > max_queue_position:
-            continue
-
-        # === Scoring ===
-        total = 0.0
-
-        # Format score: 0-35 points
-        fmt = result.file_format.value
-        if fmt in format_priority:
-            idx = format_priority.index(fmt)
-            total += 35 - (idx * (25 / max(len(format_priority) - 1, 1)))
-        else:
-            total += 0
-
-        # Audio quality: 0-25 points
-        quality = 0.0
-
-        # Bit depth: 24-bit = 10pts, 16-bit = 5pts
-        if result.bit_depth:
-            if result.bit_depth >= 24:
-                quality += 10
-            elif result.bit_depth >= 16:
-                quality += 5
-
-        # Sample rate: 96k+ = 8pts, 48k = 5pts, 44.1k = 3pts
-        if result.sample_rate:
-            if result.sample_rate >= 96000:
-                quality += 8
-            elif result.sample_rate >= 48000:
-                quality += 5
-            elif result.sample_rate >= 44100:
-                quality += 3
-
-        # Bitrate for lossy: 320 = 5pts, 256 = 3pts, lower = 0
-        if result.bitrate:
-            if result.bitrate >= 320:
-                quality += 5
-            elif result.bitrate >= 256:
-                quality += 3
-
-        # File size as quality proxy (bigger = better for same format/duration)
-        # Only useful when bit depth/sample rate aren't available
-        if quality < 5 and result.size_bytes and track.best_duration_sec:
-            # bytes per second — higher is better quality
-            bps = result.size_bytes / max(track.best_duration_sec, 1)
-            if result.file_format in (FileFormat.FLAC, FileFormat.AIFF, FileFormat.WAV):
-                # Lossless: >200KB/s is likely 24-bit, >100KB/s is 16-bit
-                if bps > 200000:
-                    quality += 7
-                elif bps > 100000:
-                    quality += 3
-            elif result.file_format == FileFormat.MP3:
-                if bps > 38000:  # ~304kbps
-                    quality += 4
-
-        total += min(quality, 25)
-
-        # Name match: 0-20 points
-        total += (name_score / 100) * 20
-
-        # Duration verified: 0 or 10 points
-        if dur_ok is True:
-            total += 10
-        elif dur_ok is None:
-            total += 3
-
-        # Availability: 0-10 points
-        if result.free_upload_slots:
-            total += 7
-        queue_penalty = min(result.queue_length, max_queue_position) / max_queue_position
-        total += (1 - queue_penalty) * 3
-
-        scored.append((total, result))
-
-    # Sort descending by score
     scored.sort(key=lambda x: x[0], reverse=True)
     return [r for _, r in scored]
