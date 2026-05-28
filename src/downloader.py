@@ -158,9 +158,32 @@ class DownloadOrchestrator:
         # "Completed, Errored", "Completed, Rejected"
 
         if "succeeded" in state_lower:
+            bytes_transferred = transfer.get("bytesTransferred", 0)
+            size_mb = bytes_transferred / 1024 / 1024
+
+            # Minimum viable size check based on format and expected duration
+            min_bytes = 512 * 1024  # absolute minimum 512KB
+            track_dur = task.track.best_duration_sec
+            if track_dur and result.file_format:
+                # Estimate minimum reasonable file size
+                fmt = result.file_format.value
+                if fmt in ("flac", "aiff", "wav"):
+                    # Lossless: at least ~50KB/sec of audio
+                    min_bytes = max(min_bytes, int(track_dur * 50000))
+                elif fmt == "mp3":
+                    # 128kbps MP3 = ~16KB/sec (floor for acceptable quality)
+                    min_bytes = max(min_bytes, int(track_dur * 16000))
+
+            if bytes_transferred < min_bytes:
+                min_mb = min_bytes / 1024 / 1024
+                logger.warning(
+                    f"  File too small ({size_mb:.1f}MB, expected ≥{min_mb:.1f}MB): {result.filename}"
+                )
+                return self._cancel_and_retry(task, f"File too small ({size_mb:.1f}MB)")
+
             task.status = DownloadStatus.COMPLETE
             task.output_path = self._resolve_output_path(task)
-            logger.info(f"  ✓ Complete: {result.filename}")
+            logger.info(f"  ✓ Complete: {result.filename} ({size_mb:.1f}MB)")
             return task.status
 
         if "errored" in state_lower or "rejected" in state_lower:
