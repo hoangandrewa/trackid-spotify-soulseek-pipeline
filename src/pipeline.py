@@ -137,6 +137,44 @@ def save_state(tasks, set_name: str = "", path: str = STATE_FILE):
         json.dump(history, f, indent=2)
 
 
+def filter_already_downloaded(tracks: list[Track]) -> tuple[list[Track], list[Track]]:
+    """
+    Check download history and remove tracks that were previously completed.
+    Returns (new_tracks, skipped_tracks).
+    """
+    if not os.path.exists(HISTORY_FILE):
+        return tracks, []
+
+    try:
+        with open(HISTORY_FILE) as f:
+            history = json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return tracks, []
+
+    # Build set of previously completed "artist - title" keys (lowercased)
+    completed = set()
+    for entry in history:
+        if entry.get("status") == "complete":
+            key = f"{entry.get('artist', '').lower()} - {entry.get('title', '').lower()}"
+            completed.add(key)
+
+    new_tracks = []
+    skipped = []
+    for track in tracks:
+        key = f"{track.artist.lower()} - {track.title.lower()}"
+        if key in completed:
+            skipped.append(track)
+        else:
+            new_tracks.append(track)
+
+    if skipped:
+        logger.info(f"  Skipping {len(skipped)} already-downloaded tracks")
+        for t in skipped:
+            logger.info(f"    ✓ {t.artist} - {t.title}")
+
+    return new_tracks, skipped
+
+
 # ── Input options shared across commands ─────────────────────────────
 
 _input_options = [
@@ -204,6 +242,10 @@ def run(ctx, csv_path: Optional[str], playlist: Optional[str]):
     logger.info("=" * 60)
     logger.info("Downloading from Soulseek...")
     logger.info("=" * 60)
+    tracks, skipped = filter_already_downloaded(tracks)
+    if not tracks:
+        logger.info("All tracks already downloaded!")
+        return
     slskd = SlskdClient(config.slskd)
     orchestrator = DownloadOrchestrator(slskd, config.download)
     summary = orchestrator.run(tracks)
@@ -279,6 +321,10 @@ def download(ctx, csv_path: Optional[str], playlist: Optional[str]):
     """Soulseek only: download tracks from CSV or Spotify playlist."""
     config = ctx.obj["config"]
     tracks, set_name, _ = resolve_input(config, csv_path, playlist)
+    tracks, skipped = filter_already_downloaded(tracks)
+    if not tracks:
+        logger.info("All tracks already downloaded!")
+        return
     logger.info(f"Downloading {len(tracks)} tracks...")
 
     slskd = SlskdClient(config.slskd)
