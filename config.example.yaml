@@ -28,8 +28,8 @@ download:
 
   # Preferred formats in priority order (first = most preferred)
   format_priority:
-    - flac
     - aiff
+    - flac
     - wav
     - mp3
 
@@ -39,20 +39,20 @@ download:
   # ── Download behavior ──
 
   # Cancel download if not started within this many minutes
-  start_timeout_min: 5
+  start_timeout_min: 10
 
   # Cancel if queue position is above this
-  max_queue_position: 50
+  max_queue_position: 2000
 
   # Cancel if transfer speed drops below this (KB/s)
   min_transfer_speed_kbps: 20
   speed_floor_duration_sec: 60
 
   # Max concurrent downloads
-  max_concurrent: 3
+  max_concurrent: 10
 
   # Seconds between polling slskd for transfer status
   poll_interval_sec: 10
 
   # Max retries per track (tries different users) before giving up
-  max_retries: 3
+  max_retries: 5
