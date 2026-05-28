@@ -1,4 +1,4 @@
-# TrackID Pipeline
+# TrackID -> Spotify -> Soulseek Pipeline
 
 Takes a TrackID.net CSV export or Spotify playlist, creates a Spotify preview
 playlist, then downloads high-quality files via Soulseek (slskd) with format
