@@ -31,6 +31,38 @@ def normalize_for_matching(text: str) -> str:
     return text
 
 
+def title_present(track: Track, result: SoulseekResult) -> bool:
+    """
+    Check if the track title (or its key words) appears in the filename or path.
+    This prevents matching wrong tracks that just share an artist name.
+    """
+    # Normalize the title — strip parentheticals first for a clean core title
+    import re
+    core_title = re.sub(r"\s*[\(\[].*?[\)\]]", "", track.title).strip()
+    title_normalized = normalize_for_matching(core_title)
+    title_words = set(title_normalized.split())
+
+    # Remove very short/common words that cause false matches
+    stopwords = {"the", "a", "an", "of", "in", "on", "at", "to", "for", "and", "or", "mix", "remix", "original", "pt", "part"}
+    title_words = title_words - stopwords
+
+    if not title_words:
+        # Title was all stopwords — fall back to full normalized title substring check
+        title_words = set(normalize_for_matching(track.title).split())
+
+    # Build candidate strings from filename and path
+    filename_clean = result.filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1].rsplit(".", 1)[0]
+    filename_normalized = normalize_for_matching(filename_clean.replace("_", " ").replace("-", " "))
+    path_normalized = normalize_for_matching(result.file_path.replace("\\", "/").replace("_", " ").replace("-", " "))
+
+    candidate_words = set(filename_normalized.split()) | set(path_normalized.split())
+
+    # Require at least half of the title words to appear, and at least 1
+    matches = title_words & candidate_words
+    required = max(1, len(title_words) // 2)
+    return len(matches) >= required
+
+
 def match_score(track: Track, result: SoulseekResult) -> int:
     """
     Score how well a Soulseek result matches the target track.
@@ -107,6 +139,10 @@ def rank_candidates(
 
         # Must be an audio file
         if result.extension not in AUDIO_EXTENSIONS:
+            continue
+
+        # Track title must appear in the filename/path
+        if not title_present(track, result):
             continue
 
         # Must meet minimum name match
