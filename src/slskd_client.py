@@ -85,7 +85,7 @@ class SlskdClient:
     def search(
         self,
         query: str,
-        timeout_sec: float = 30.0,
+        timeout_sec: float = 15.0,
         poll_interval: float = 2.0,
     ) -> list[SoulseekResult]:
         """
