@@ -255,8 +255,10 @@ class DownloadOrchestrator:
 
         with ThreadPoolExecutor(max_workers=2) as executor:
             futures = {}
-            for task in self.tasks:
+            for i, task in enumerate(self.tasks):
                 futures[executor.submit(self.search_and_rank, task)] = task
+                if i == 0:
+                    time.sleep(3)  # Stagger first two tasks
 
             for future in as_completed(futures):
                 task = futures[future]
