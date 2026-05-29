@@ -99,29 +99,43 @@ class SlskdClient:
         search = self._post("/searches", json={"searchText": query})
         search_id = search["id"]
 
-        deadline = time.time() + timeout_sec
+        # slskd completes searches at ~18s. /responses is empty until then.
+        # Just wait for completion.
+        deadline = time.time() + 25  # hard cap slightly above slskd's ~18s timeout
         completed = False
 
         while time.time() < deadline:
             time.sleep(poll_interval)
             state = self._get(f"/searches/{search_id}")
             state_str = state.get("state", "")
-            file_count = state.get("fileCount", 0)
 
             if state.get("isComplete", False) or "Completed" in state_str:
                 completed = True
                 break
 
-            # If we already have enough files reported, grab what we have
-            if file_count > 20:
-                break
-
         # Always fetch results — even on timeout, partial results may exist
-        responses = self._get(f"/searches/{search_id}/responses")
+        try:
+            responses = self._get(f"/searches/{search_id}/responses")
+        except Exception as e:
+            logger.error(f"  Failed to fetch responses for '{query}': {e}")
+            responses = []
+
+        if isinstance(responses, list):
+            logger.info(f"  Raw responses: {len(responses)} entries")
+        else:
+            logger.info(f"  Raw responses type: {type(responses)}")
+
         results = self._parse_search_results(responses, search_id)
 
         status = "complete" if completed else "partial/timeout"
         logger.info(f"  Found {len(results)} results for '{query}' ({status})")
+
+        if not results and isinstance(responses, list) and len(responses) > 0:
+            # We got responses but parsing produced 0 results — log why
+            logger.warning(f"  Responses exist ({len(responses)}) but 0 parsed — check parse logic")
+            sample = responses[0] if responses else {}
+            logger.warning(f"  Sample response keys: {list(sample.keys()) if isinstance(sample, dict) else type(sample)}")
+
         return results
 
     def _parse_search_results(self, responses: list, search_id: str) -> list[SoulseekResult]:
