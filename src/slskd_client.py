@@ -99,9 +99,9 @@ class SlskdClient:
         search = self._post("/searches", json={"searchText": query})
         search_id = search["id"]
 
-        # slskd completes searches at ~18s. /responses is empty until then.
+        # slskd completes searches at ~18-25s. /responses is empty until then.
         # Just wait for completion.
-        deadline = time.time() + 25  # hard cap slightly above slskd's ~18s timeout
+        deadline = time.time() + 30  # hard cap above slskd's variable timeout
         completed = False
 
         while time.time() < deadline:
