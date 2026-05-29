@@ -245,21 +245,27 @@ class DownloadOrchestrator:
         self.prepare_tasks(tracks)
 
         # Phase 1: Search and rank all tracks
-        # Sequential — slskd limits concurrent searches to 2, and each track
-        # does multiple queries internally, so parallel causes silent failures
+        # 2 parallel — slskd allows 2 concurrent searches, and we now
+        # wait for completion so results are reliable
         logger.info("=" * 60)
         logger.info("Phase 1: Searching Soulseek for all tracks...")
         logger.info("=" * 60)
 
-        for i, task in enumerate(self.tasks):
-            try:
-                self.search_and_rank(task)
-            except Exception as e:
-                logger.error(f"  Search failed for {task.track.search_query}: {e}")
-                task.status = DownloadStatus.FAILED
-                task.error = str(e)
-            if i < len(self.tasks) - 1:
-                time.sleep(2)
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = {}
+            for task in self.tasks:
+                futures[executor.submit(self.search_and_rank, task)] = task
+
+            for future in as_completed(futures):
+                task = futures[future]
+                try:
+                    future.result()
+                except Exception as e:
+                    logger.error(f"  Search failed for {task.track.search_query}: {e}")
+                    task.status = DownloadStatus.FAILED
+                    task.error = str(e)
 
         # Phase 2: Queue initial downloads (up to max_concurrent)
         logger.info("=" * 60)
