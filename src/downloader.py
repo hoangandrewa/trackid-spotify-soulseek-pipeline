@@ -64,7 +64,7 @@ class DownloadOrchestrator:
         seen_paths = set()
 
         for query in queries:
-            results = self.slskd.search(query, timeout_sec=15.0)
+            results = self.slskd.search(query, timeout_sec=30.0)
             for r in results:
                 if r.file_path not in seen_paths:
                     seen_paths.add(r.file_path)
