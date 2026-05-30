@@ -95,3 +95,7 @@ class DownloadTask:
     transfer_id: Optional[str] = None
     output_path: Optional[str] = None
     error: Optional[str] = None
+    # Users already tried — don't retry same user
+    tried_users: set = field(default_factory=set)
+    # When the first download attempt was queued (for total time cap)
+    first_queued_at: Optional[float] = None

@@ -102,34 +102,44 @@ class DownloadOrchestrator:
 
     def queue_next_candidate(self, task: DownloadTask) -> bool:
         """Queue the next untried candidate for download. Returns False if exhausted."""
-        if task.candidate_index >= len(task.candidates):
-            task.status = DownloadStatus.FAILED
-            task.error = "All candidates exhausted"
-            return False
-
         if task.attempts >= self.config.max_retries:
             task.status = DownloadStatus.FAILED
             task.error = f"Max retries ({self.config.max_retries}) reached"
             return False
 
-        candidate = task.candidates[task.candidate_index]
-        task.current_result = candidate
-        task.candidate_index += 1
-        task.attempts += 1
+        # Find next candidate from a user we haven't tried yet
+        while task.candidate_index < len(task.candidates):
+            candidate = task.candidates[task.candidate_index]
+            task.candidate_index += 1
 
-        try:
-            transfer_id = self.slskd.queue_download(candidate)
-            task.transfer_id = transfer_id
-            task.status = DownloadStatus.QUEUED
-            logger.info(
-                f"  Queued candidate #{task.candidate_index}: "
-                f"{candidate.filename} from {candidate.username}"
-            )
-            return True
-        except Exception as e:
-            logger.error(f"  Failed to queue: {e}")
-            # Try next candidate
-            return self.queue_next_candidate(task)
+            # Skip users we've already tried
+            if candidate.username in task.tried_users:
+                continue
+
+            task.current_result = candidate
+            task.tried_users.add(candidate.username)
+            task.attempts += 1
+
+            if task.first_queued_at is None:
+                task.first_queued_at = time.time()
+
+            try:
+                transfer_id = self.slskd.queue_download(candidate)
+                task.transfer_id = transfer_id
+                task.status = DownloadStatus.QUEUED
+                logger.info(
+                    f"  Queued candidate #{task.candidate_index}: "
+                    f"{candidate.filename} from {candidate.username}"
+                )
+                return True
+            except Exception as e:
+                logger.error(f"  Failed to queue: {e}")
+                # Try next candidate
+                continue
+
+        task.status = DownloadStatus.FAILED
+        task.error = "All candidates exhausted"
+        return False
 
     def check_transfer(self, task: DownloadTask) -> DownloadStatus:
         """
@@ -245,29 +255,20 @@ class DownloadOrchestrator:
         self.prepare_tasks(tracks)
 
         # Phase 1: Search and rank all tracks
-        # 2 parallel — slskd allows 2 concurrent searches, and we now
-        # wait for completion so results are reliable
+        # Fully sequential — slskd queues searches internally, and queued
+        # searches timeout before being processed. Sequential ensures each
+        # search gets processed immediately with no queue buildup.
         logger.info("=" * 60)
         logger.info("Phase 1: Searching Soulseek for all tracks...")
         logger.info("=" * 60)
 
-        from concurrent.futures import ThreadPoolExecutor, as_completed
-
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            futures = {}
-            for i, task in enumerate(self.tasks):
-                futures[executor.submit(self.search_and_rank, task)] = task
-                if i == 0:
-                    time.sleep(3)  # Stagger first two tasks
-
-            for future in as_completed(futures):
-                task = futures[future]
-                try:
-                    future.result()
-                except Exception as e:
-                    logger.error(f"  Search failed for {task.track.search_query}: {e}")
-                    task.status = DownloadStatus.FAILED
-                    task.error = str(e)
+        for i, task in enumerate(self.tasks):
+            try:
+                self.search_and_rank(task)
+            except Exception as e:
+                logger.error(f"  Search failed for {task.track.search_query}: {e}")
+                task.status = DownloadStatus.FAILED
+                task.error = str(e)
 
         # Phase 2: Queue initial downloads (up to max_concurrent)
         logger.info("=" * 60)
@@ -299,6 +300,25 @@ class DownloadOrchestrator:
                 # Track when this task was queued
                 if task_key not in start_times:
                     start_times[task_key] = time.time()
+
+                # Total time cap — give up after 20 min across all retries
+                if task.first_queued_at:
+                    total_elapsed_min = (time.time() - task.first_queued_at) / 60.0
+                    if total_elapsed_min > 20:
+                        logger.warning(
+                            f"  Total time cap (20 min): {task.track.search_query}"
+                        )
+                        if task.current_result and task.transfer_id:
+                            self.slskd.cancel_download(
+                                task.current_result.username,
+                                task.transfer_id,
+                                task.current_result.file_path,
+                            )
+                        task.status = DownloadStatus.FAILED
+                        task.error = "Total time cap (20 min) reached"
+                        active.remove(task)
+                        fill_slots()
+                        continue
 
                 # Check for start timeout
                 elapsed_min = (time.time() - start_times[task_key]) / 60.0
