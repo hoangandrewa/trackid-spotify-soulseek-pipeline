@@ -1,0 +1,170 @@
+{
+  "timestamp": "2026-05-30T17:05:39.870572",
+  "set_name": "retry",
+  "total": 23,
+  "completed": 15,
+  "failed": 8,
+  "tracks": [
+    {
+      "artist": "D.Dan",
+      "title": "Rising",
+      "status": "failed",
+      "error": "Start timeout",
+      "output_path": null
+    },
+    {
+      "artist": "Sina XX, Metaraph",
+      "title": "Color Of People",
+      "status": "failed",
+      "error": "No viable candidates found",
+      "output_path": null
+    },
+    {
+      "artist": "Alarico, Laster Records",
+      "title": "Of Which Sugars - Original",
+      "status": "failed",
+      "error": "Start timeout",
+      "output_path": null
+    },
+    {
+      "artist": "Alarico",
+      "title": "Mezcal y Sangre",
+      "status": "complete",
+      "error": null,
+      "output_path": "/Users/andrewhoang/Music/TrackID Downloads/Alarico - Mezcal y Sangre.flac"
+    },
+    {
+      "artist": "Benjamin Damage",
+      "title": "Matriachy",
+      "status": "complete",
+      "error": null,
+      "output_path": "/Users/andrewhoang/Music/TrackID Downloads/Benjamin Damage - Matriachy.flac"
+    },
+    {
+      "artist": "Nastia Reigel",
+      "title": "Do It Now",
+      "status": "complete",
+      "error": null,
+      "output_path": "/Users/andrewhoang/Music/TrackID Downloads/Nastia Reigel - Do It Now.flac"
+    },
+    {
+      "artist": "Connor Wall",
+      "title": "Flinders Drive",
+      "status": "failed",
+      "error": "No viable candidates found",
+      "output_path": null
+    },
+    {
+      "artist": "Decoder",
+      "title": "Dreamscape",
+      "status": "complete",
+      "error": null,
+      "output_path": "/Users/andrewhoang/Music/TrackID Downloads/Decoder - Dreamscape.mp3"
+    },
+    {
+      "artist": "Heiko Laux",
+      "title": "Hangin'",
+      "status": "complete",
+      "error": null,
+      "output_path": "/Users/andrewhoang/Music/TrackID Downloads/Heiko Laux - Hangin.mp3"
+    },
+    {
+      "artist": "Ness",
+      "title": "A Darkly Sunset In Barcelona",
+      "status": "complete",
+      "error": null,
+      "output_path": "/Users/andrewhoang/Music/TrackID Downloads/Ness - A Darkly Sunset In Barcelona.aiff"
+    },
+    {
+      "artist": "Quelza",
+      "title": "La Rive",
+      "status": "complete",
+      "error": null,
+      "output_path": "/Users/andrewhoang/Music/TrackID Downloads/Quelza - La Rive.flac"
+    },
+    {
+      "artist": "Quelza",
+      "title": "The Free Speech",
+      "status": "complete",
+      "error": null,
+      "output_path": "/Users/andrewhoang/Music/TrackID Downloads/Quelza - The Free Speech.flac"
+    },
+    {
+      "artist": "D-Leria",
+      "title": "Invisible - Mixed",
+      "status": "failed",
+      "error": "No viable candidates found",
+      "output_path": null
+    },
+    {
+      "artist": "Toru Ikemoto, DJ HI-C",
+      "title": "1982",
+      "status": "complete",
+      "error": null,
+      "output_path": "/Users/andrewhoang/Music/TrackID Downloads/Toru Ikemoto DJ HI-C - 1982.flac"
+    },
+    {
+      "artist": "D-Leria, Polygonia",
+      "title": "Voodoo Magic - Polygonia Remix",
+      "status": "complete",
+      "error": null,
+      "output_path": "/Users/andrewhoang/Music/TrackID Downloads/D-Leria Polygonia - Voodoo Magic - Polygonia Remix.mp3"
+    },
+    {
+      "artist": "D.Dan",
+      "title": "X-Dreams",
+      "status": "failed",
+      "error": "No viable candidates found",
+      "output_path": null
+    },
+    {
+      "artist": "Oscar Mulero",
+      "title": "DHA-1000",
+      "status": "failed",
+      "error": "No viable candidates found",
+      "output_path": null
+    },
+    {
+      "artist": "Gareth Wild, Voicedrone",
+      "title": "Canning Town - Digital Bonus",
+      "status": "complete",
+      "error": null,
+      "output_path": "/Users/andrewhoang/Music/TrackID Downloads/Gareth Wild Voicedrone - Canning Town - Digital Bonus.flac"
+    },
+    {
+      "artist": "Fireground",
+      "title": "Etereo",
+      "status": "complete",
+      "error": null,
+      "output_path": "/Users/andrewhoang/Music/TrackID Downloads/Fireground - Etereo.flac"
+    },
+    {
+      "artist": "Ahmet Sisman, VNNN.",
+      "title": "Inorganic Transformation",
+      "status": "complete",
+      "error": null,
+      "output_path": "/Users/andrewhoang/Music/TrackID Downloads/Ahmet Sisman VNNN - Inorganic Transformation.flac"
+    },
+    {
+      "artist": "The Lady Machine",
+      "title": "Collide",
+      "status": "complete",
+      "error": null,
+      "output_path": "/Users/andrewhoang/Music/TrackID Downloads/The Lady Machine - Collide.flac"
+    },
+    {
+      "artist": "The Lady Machine",
+      "title": "Resilience",
+      "status": "complete",
+      "error": null,
+      "output_path": "/Users/andrewhoang/Music/TrackID Downloads/The Lady Machine - Resilience.mp3"
+    },
+    {
+      "artist": "Henning Baer, The Lady Machine",
+      "title": "Burning Chrome - The Lady Machine Remix",
+      "status": "failed",
+      "error": "No viable candidates found",
+      "output_path": null
+    }
+  ]
+}

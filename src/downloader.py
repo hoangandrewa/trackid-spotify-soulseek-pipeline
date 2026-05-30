@@ -43,22 +43,56 @@ class DownloadOrchestrator:
         task.status = DownloadStatus.SEARCHING
         track = task.track
 
-        # Strip parentheticals and common noise for cleaner searches
         import re
+        import unicodedata
+
+        def clean_for_search(text: str) -> str:
+            """Transliterate accents to ASCII and strip problematic symbols.
+            Soulseek search is literal — uploaders usually use plain ASCII."""
+            # Decompose accented chars and drop the accent marks (ø→o, å→a, ā→a)
+            text = text.replace("ø", "o").replace("Ø", "O")
+            text = unicodedata.normalize("NFKD", text)
+            text = "".join(c for c in text if not unicodedata.combining(c))
+            # Apostrophes/quotes: remove entirely (Hangin' → Hangin, don't → dont)
+            text = re.sub(r"['\u2018\u2019\u201c\u201d`]", "", text)
+            # Hyphens, dashes, periods: replace with space (D-Leria → D Leria, D.Dan → D Dan)
+            text = re.sub(r"[-–—.]", " ", text)
+            # Brackets/parens: remove the brackets, keep the content
+            text = re.sub(r"[\[\](){}]", " ", text)
+            # All other punctuation: remove
+            text = re.sub(r"[^\w\s]", "", text)
+            text = re.sub(r"\s+", " ", text).strip()
+            return text
+
+        # Strip parentheticals and common noise for cleaner searches
         clean_title = re.sub(r"\s*[\(\[].*?[\)\]]", "", track.title).strip()
-        # For artists with commas (collabs), use just the first artist
-        primary_artist = track.artist.split(",")[0].strip()
+        clean_title = clean_for_search(clean_title)
+        full_title = clean_for_search(track.title)
+
+        # Strip national/regional identifiers from artist name — these are
+        # Discogs/Spotify disambiguation tags that never appear in filenames
+        # e.g. "Pause (FR)" → "Pause", "LYRIC (GER)" → "LYRIC"
+        REGION_TAGS = re.compile(
+            r"\s*\((?:FR|GER|DE|UK|US|JP|AU|IT|ES|NL|SE|DK|NO|FI|BE|PL|CZ|AT|CH|RU|BR|CA|MX|AR|NZ|KR|CN)\)",
+            re.IGNORECASE,
+        )
+        raw_artist = track.artist.split(",")[0].strip()
+        stripped_artist = REGION_TAGS.sub("", raw_artist).strip()
+        primary_artist = clean_for_search(stripped_artist)
 
         # Multiple search strategies — broad to narrow
-        # Soulseek search is a filename grep, so simpler queries = more results
         queries = [
             f"{primary_artist} {clean_title}",   # Artist + clean title
             clean_title,                           # Just the title
             primary_artist,                        # Just the artist (cast a wide net)
         ]
         # If title has remix/version info, also search with full title
-        if clean_title != track.title:
-            queries.insert(1, f"{primary_artist} {track.title}")
+        if clean_title != full_title:
+            queries.insert(1, f"{primary_artist} {full_title}")
+
+        # Dedupe queries while preserving order
+        seen_q = set()
+        queries = [q for q in queries if q and not (q in seen_q or seen_q.add(q))]
 
         all_results: list[SoulseekResult] = []
         seen_paths = set()

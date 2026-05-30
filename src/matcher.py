@@ -60,8 +60,19 @@ NEGATIVE_KEYWORDS_SOFT = [
 # ── Text normalization ────────────────────────────────────────────────
 
 def normalize(text: str) -> str:
-    """Lowercase, strip noise patterns, remove non-alphanumeric, collapse spaces."""
+    """Lowercase, transliterate accents, strip noise, collapse spaces."""
+    import unicodedata
     text = text.lower().strip()
+    # Transliterate accented characters to ASCII (ø→o, å→a, ā→a, é→e)
+    text = text.replace("ø", "o")
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    # Apostrophes: remove entirely (hangin' → hangin, don't → dont)
+    text = re.sub(r"['\u2018\u2019\u201c\u201d`]", "", text)
+    # Hyphens, dashes, periods: replace with space
+    text = re.sub(r"[-–—.]", " ", text)
+    # Brackets/parens: remove, keep content
+    text = re.sub(r"[\[\](){}]", " ", text)
     for pattern in STRIP_PATTERNS:
         text = re.sub(pattern, "", text, flags=re.IGNORECASE)
     text = re.sub(r"[^a-z0-9\s]", "", text)
