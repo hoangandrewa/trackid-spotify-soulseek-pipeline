@@ -9,7 +9,7 @@ from typing import Optional
 
 from .config import DownloadConfig
 from .models import Track, DownloadTask, DownloadStatus, SoulseekResult
-from .slskd_client import SlskdClient
+from .slskd_client import SlskdClient, SlskdDisconnected
 from .matcher import rank_candidates
 
 logger = logging.getLogger(__name__)
@@ -166,6 +166,14 @@ class DownloadOrchestrator:
                     f"{candidate.filename} from {candidate.username}"
                 )
                 return True
+            except SlskdDisconnected:
+                # Not this candidate's fault — put it back so it's tried
+                # again later instead of being written off.
+                task.candidate_index -= 1
+                task.tried_users.discard(candidate.username)
+                task.attempts -= 1
+                task.current_result = None
+                raise
             except Exception as e:
                 logger.error(f"  Failed to queue: {e}")
                 # Try next candidate
@@ -288,100 +296,55 @@ class DownloadOrchestrator:
         """
         self.prepare_tasks(tracks)
 
-        # Phase 1: Search and rank all tracks
-        # Fully sequential — slskd queues searches internally, and queued
-        # searches timeout before being processed. Sequential ensures each
-        # search gets processed immediately with no queue buildup.
+        # Searches stay fully sequential — slskd queues searches internally and
+        # queued searches time out before being processed. But downloads no
+        # longer wait for every search to finish: each track is queued as soon
+        # as its search finds a match, and active downloads are checked between
+        # searches. A mid-run problem no longer throws away earlier matches.
+        self._active: list[DownloadTask] = []
+        self._pending: list[DownloadTask] = []
+        self._start_times: dict[int, float] = {}  # task id -> time queued
+
         logger.info("=" * 60)
-        logger.info("Phase 1: Searching Soulseek for all tracks...")
+        logger.info("Searching Soulseek and queueing downloads as matches come in...")
         logger.info("=" * 60)
 
-        for i, task in enumerate(self.tasks):
-            try:
-                self.search_and_rank(task)
-            except Exception as e:
-                logger.error(f"  Search failed for {task.track.search_query}: {e}")
-                task.status = DownloadStatus.FAILED
-                task.error = str(e)
+        try:
+            for i, task in enumerate(self.tasks, 1):
+                logger.info(f"[{i}/{len(self.tasks)}] {task.track.search_query}")
+                try:
+                    if self.search_and_rank(task):
+                        self._pending.append(task)
+                except SlskdDisconnected:
+                    raise
+                except Exception as e:
+                    logger.error(f"  Search failed for {task.track.search_query}: {e}")
+                    task.status = DownloadStatus.FAILED
+                    task.error = str(e)
 
-        # Phase 2: Queue initial downloads (up to max_concurrent)
-        logger.info("=" * 60)
-        logger.info("Phase 2: Queueing downloads...")
-        logger.info("=" * 60)
-        active: list[DownloadTask] = []
-        pending = [t for t in self.tasks if t.candidates]
+                self._fill_slots()
+                self._monitor_tick()
 
-        def fill_slots():
-            while len(active) < self.config.max_concurrent and pending:
-                task = pending.pop(0)
-                if self.queue_next_candidate(task):
-                    active.append(task)
+            logger.info("=" * 60)
+            logger.info("All searches done — monitoring remaining downloads...")
+            logger.info("=" * 60)
 
-        fill_slots()
+            while self._active or self._pending:
+                time.sleep(self.config.poll_interval_sec)
+                self._fill_slots()
+                self._monitor_tick()
+                self._log_progress()
 
-        # Phase 3: Monitor loop
-        logger.info("=" * 60)
-        logger.info("Phase 3: Monitoring downloads...")
-        logger.info("=" * 60)
-        start_times: dict[int, float] = {}  # task id -> time when queued
-
-        while active:
-            time.sleep(self.config.poll_interval_sec)
-
-            for task in list(active):
-                task_key = id(task)
-
-                # Track when this task was queued
-                if task_key not in start_times:
-                    start_times[task_key] = time.time()
-
-                # Total time cap — give up after 20 min across all retries
-                if task.first_queued_at:
-                    total_elapsed_min = (time.time() - task.first_queued_at) / 60.0
-                    if total_elapsed_min > 20:
-                        logger.warning(
-                            f"  Total time cap (20 min): {task.track.search_query}"
-                        )
-                        if task.current_result and task.transfer_id:
-                            self.slskd.cancel_download(
-                                task.current_result.username,
-                                task.transfer_id,
-                                task.current_result.file_path,
-                            )
-                        task.status = DownloadStatus.FAILED
-                        task.error = "Total time cap (20 min) reached"
-                        active.remove(task)
-                        fill_slots()
-                        continue
-
-                # Check for start timeout
-                elapsed_min = (time.time() - start_times[task_key]) / 60.0
-                if (
-                    task.status == DownloadStatus.QUEUED
-                    and elapsed_min > self.config.start_timeout_min
-                ):
-                    logger.warning(
-                        f"  Start timeout ({self.config.start_timeout_min} min): "
-                        f"{task.track.search_query}"
-                    )
-                    self._cancel_and_retry(task, "Start timeout")
-                    start_times[task_key] = time.time()  # Reset timer for retry
-
-                # Check transfer status
-                status = self.check_transfer(task)
-
-                if status in (DownloadStatus.COMPLETE, DownloadStatus.FAILED):
-                    active.remove(task)
-                    fill_slots()
-
-            # Progress report
-            complete = sum(1 for t in self.tasks if t.status == DownloadStatus.COMPLETE)
-            failed = sum(1 for t in self.tasks if t.status == DownloadStatus.FAILED)
-            total = len(self.tasks)
-            logger.info(
-                f"  Progress: {complete}/{total} complete, "
-                f"{failed} failed, {len(active)} active"
-            )
+        except SlskdDisconnected as e:
+            logger.error("=" * 60)
+            logger.error(f"Stopping run: {e}")
+            logger.error("=" * 60)
+            # Anything not finished is marked failed so `retry` picks it up.
+            # Downloads already queued keep going inside slskd.
+            for t in self.tasks:
+                if t.status not in (DownloadStatus.COMPLETE, DownloadStatus.FAILED):
+                    t.status = DownloadStatus.FAILED
+                    t.error = "Stopped: slskd disconnected from Soulseek"
 
         # Summary
         completed = [t for t in self.tasks if t.status == DownloadStatus.COMPLETE]
@@ -399,6 +362,73 @@ class DownloadOrchestrator:
             "completed_tracks": completed,
             "failed_tracks": failed,
         }
+
+    def _fill_slots(self) -> None:
+        """Queue pending tracks until max_concurrent downloads are active."""
+        while len(self._active) < self.config.max_concurrent and self._pending:
+            task = self._pending.pop(0)
+            try:
+                queued = self.queue_next_candidate(task)
+            except SlskdDisconnected:
+                self._pending.insert(0, task)  # keep it for after reconnect
+                raise
+            if queued:
+                self._active.append(task)
+
+    def _monitor_tick(self) -> None:
+        """One pass over active downloads: timeouts, retries, completion."""
+        for task in list(self._active):
+            task_key = id(task)
+
+            # Track when this task was queued
+            if task_key not in self._start_times:
+                self._start_times[task_key] = time.time()
+
+            # Total time cap — give up after 20 min across all retries
+            if task.first_queued_at:
+                total_elapsed_min = (time.time() - task.first_queued_at) / 60.0
+                if total_elapsed_min > 20:
+                    logger.warning(
+                        f"  Total time cap (20 min): {task.track.search_query}"
+                    )
+                    if task.current_result and task.transfer_id:
+                        self.slskd.cancel_download(
+                            task.current_result.username,
+                            task.transfer_id,
+                            task.current_result.file_path,
+                        )
+                    task.status = DownloadStatus.FAILED
+                    task.error = "Total time cap (20 min) reached"
+                    self._active.remove(task)
+                    continue
+
+            # Check for start timeout
+            elapsed_min = (time.time() - self._start_times[task_key]) / 60.0
+            if (
+                task.status == DownloadStatus.QUEUED
+                and elapsed_min > self.config.start_timeout_min
+            ):
+                logger.warning(
+                    f"  Start timeout ({self.config.start_timeout_min} min): "
+                    f"{task.track.search_query}"
+                )
+                self._cancel_and_retry(task, "Start timeout")
+                self._start_times[task_key] = time.time()  # Reset timer for retry
+
+            # Check transfer status
+            status = self.check_transfer(task)
+
+            if status in (DownloadStatus.COMPLETE, DownloadStatus.FAILED):
+                self._active.remove(task)
+
+    def _log_progress(self) -> None:
+        complete = sum(1 for t in self.tasks if t.status == DownloadStatus.COMPLETE)
+        failed = sum(1 for t in self.tasks if t.status == DownloadStatus.FAILED)
+        logger.info(
+            f"  Progress: {complete}/{len(self.tasks)} complete, "
+            f"{failed} failed, {len(self._active)} active, "
+            f"{len(self._pending)} waiting"
+        )
 
     def flatten_downloads(self):
         """

@@ -12,6 +12,10 @@ from .models import SoulseekResult, FileFormat
 logger = logging.getLogger(__name__)
 
 
+class SlskdDisconnected(Exception):
+    """slskd lost its Soulseek connection and didn't get it back in time."""
+
+
 class SlskdClient:
     """
     Client for the slskd REST API.
@@ -58,18 +62,94 @@ class SlskdClient:
     def _url(self, path: str) -> str:
         return f"{self.base_url}/api/v0{path}"
 
+    # ── Soulseek connection state ─────────────────────────────────────
+
+    # How long to wait for slskd to get back onto the Soulseek network
+    # before giving up on the run. slskd reconnects on its own, usually
+    # within seconds; this covers longer internet outages too.
+    RECONNECT_MAX_WAIT_SEC = 300
+
+    def server_state(self) -> dict:
+        """GET /server → {state, isConnected, isLoggedIn, isTransitioning, ...}"""
+        resp = self.session.get(self._url("/server"), timeout=10)
+        resp.raise_for_status()
+        return resp.json()
+
+    def is_logged_in(self) -> bool:
+        try:
+            return bool(self.server_state().get("isLoggedIn"))
+        except requests.RequestException:
+            # slskd itself unreachable (container restarting etc.)
+            return False
+
+    def ensure_connected(self, max_wait_sec: Optional[float] = None) -> None:
+        """
+        Block until slskd is logged in to Soulseek. Returns immediately if it
+        already is. While waiting, slskd's own auto-reconnect usually brings it
+        back; if it sits disconnected (not mid-reconnect) we nudge it with
+        PUT /server. Raises SlskdDisconnected if it never comes back.
+        """
+        if self.is_logged_in():
+            return
+
+        max_wait = max_wait_sec if max_wait_sec is not None else self.RECONNECT_MAX_WAIT_SEC
+        logger.warning("  slskd is not connected to Soulseek — waiting for it to reconnect...")
+        start = time.time()
+        last_nudge = 0.0
+
+        while time.time() - start < max_wait:
+            time.sleep(3)
+            try:
+                state = self.server_state()
+            except requests.RequestException:
+                continue  # slskd API down; keep waiting
+
+            if state.get("isLoggedIn"):
+                logger.info(f"  Reconnected to Soulseek after {time.time() - start:.0f}s — resuming")
+                return
+
+            # Not reconnecting by itself → ask it to, at most every 30s
+            transitioning = state.get("isTransitioning") or "Connecting" in str(state.get("state", ""))
+            if not transitioning and time.time() - last_nudge > 30:
+                last_nudge = time.time()
+                try:
+                    self.session.put(self._url("/server"), timeout=10)
+                    logger.info("  Asked slskd to reconnect")
+                except requests.RequestException:
+                    pass
+
+        raise SlskdDisconnected(
+            f"slskd was not connected to Soulseek for {max_wait:.0f}s. "
+            "Check the web UI (http://localhost:5030) and `docker logs slskd`, "
+            "and make sure no other client is logged in with your username."
+        )
+
     def _request(self, method: str, path: str, max_retries: int = 3, **kwargs):
-        """Make an HTTP request with retry logic for rate limits."""
-        for attempt in range(max_retries + 1):
+        """
+        Make an HTTP request with retry logic for rate limits and for
+        Soulseek disconnects. When slskd is offline it answers searches with
+        409 and enqueues with 500; in that case we wait for it to reconnect
+        and replay the same request instead of failing.
+        """
+        reconnect_retries = 3
+        attempt = 0
+        while True:
             resp = self.session.request(method, self._url(path), **kwargs)
-            if resp.status_code == 429:
-                wait = min(5 * (attempt + 1), 30)
+
+            if resp.status_code == 429 and attempt < max_retries:
+                attempt += 1
+                wait = min(5 * attempt, 30)
                 logger.warning(f"  Rate limited, waiting {wait}s...")
                 time.sleep(wait)
                 continue
+
+            if resp.status_code in (409, 500) and reconnect_retries > 0 and not self.is_logged_in():
+                reconnect_retries -= 1
+                self.ensure_connected()  # raises SlskdDisconnected if it never returns
+                continue
+
             resp.raise_for_status()
             return resp
-        resp.raise_for_status()  # Raise the last 429
 
     def _get(self, path: str, **kwargs) -> dict:
         return self._request("GET", path, **kwargs).json()
@@ -95,6 +175,7 @@ class SlskdClient:
         endpoint until complete, then fetch results from /responses.
         Always fetches partial results even if the search times out.
         """
+        self.ensure_connected()
         logger.info(f"Searching Soulseek: '{query}'")
         search = self._post("/searches", json={"searchText": query})
         search_id = search["id"]
@@ -185,6 +266,7 @@ class SlskdClient:
         Queue a file for download from a specific user.
         Returns a transfer ID for tracking.
         """
+        self.ensure_connected()
         logger.info(f"Queueing download: {result.filename} from {result.username}")
 
         payload = [

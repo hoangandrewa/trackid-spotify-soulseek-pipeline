@@ -134,11 +134,12 @@ Soulseek matching accuracy.
 
 1. **Parse input** — reads a TrackID CSV or fetches tracks from a Spotify playlist
 2. **Spotify search** (CSV only) — fuzzy-matches tracks and creates a preview playlist
-3. **Soulseek search** — multiple query strategies per track (artist+title, title only, artist only), 2 concurrent searches, 15s timeout per query
+3. **Soulseek search** — multiple query strategies per track (artist+title, title only, artist only), run one at a time
 4. **Stage A — Identity match** — filters results to only correct tracks (see below)
 5. **Stage B — Quality ranking** — among confirmed matches, picks the best copy
-6. **Download** — queues top candidate, monitors progress, cancels and retries from next candidate if stalled, rejected, or too slow
-7. **Flatten** — moves all downloaded files from subfolders into a single output directory
+6. **Download** — each track is queued as soon as its search finds a match (downloads run while later tracks are still being searched); monitors progress, cancels and retries from next candidate if stalled, rejected, or too slow
+7. **Connection guard** — before every search and download, checks that slskd is logged in to Soulseek. If the connection drops mid-run, the pipeline waits (up to 5 min) for slskd to reconnect and picks up where it left off
+8. **Flatten** — moves all downloaded files from subfolders into a single output directory
 
 ## Matching architecture
 
@@ -197,6 +198,16 @@ See `config.example.yaml` for all options. Key settings:
 Users are blocking you because you're not sharing files. Make sure your Docker
 command mounts a music folder with `-v "/path/to/music:/music:ro"` and sets
 `SLSKD_SHARED_DIR=/music`.
+
+**"slskd is not connected to Soulseek — waiting for it to reconnect"**
+slskd dropped off the Soulseek network (flaky internet, or another client logged
+in with the same username, which kicks slskd off). The pipeline pauses and
+resumes automatically. If it stops with "Stopping run: slskd was not connected",
+open http://localhost:5030, check `docker logs slskd`, close any other Soulseek
+client using your username, then run `python -m src.pipeline retry`.
+
+(Before this guard existed, a drop showed up as a wall of
+`409 Conflict for url: .../api/v0/searches` and `500 ... /transfers/downloads/...`.)
 
 **"429 Too Many Requests"**
 slskd limits concurrent searches to 2. The pipeline handles this with automatic
